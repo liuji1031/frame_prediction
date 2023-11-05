@@ -143,24 +143,20 @@ class FramePredictionModel(tf.keras.Model):
         self.loss_fcn = tf.keras.losses.mean_squared_error
 
     def call(self, inputs, training=None, mask=None):
-        """forward pass through the network
+        # Unpack inputs
+        frame, action, visual_odometry = inputs  # Now includes visual odometry data
 
-        Args:
-            inputs (_type_): _description_
-            training (_type_, optional): _description_. Defaults to None.
-            mask (_type_, optional): _description_. Defaults to None.
-        """
-        # unpack inputs
-        frame, action = inputs
-
-        # encoder layer
+        # Encoder layer
         enc = self.encoder(frame)
 
-        # interaction module
+        # Interaction module
         interaction = self.interaction((enc, action))
 
-        # return decoder output
-        return self.decoder(interaction)
+        # Incorporate visual odometry data
+        combined = tf.concat([interaction, visual_odometry], axis=-1)
+
+        # Return decoder output
+        return self.decoder(combined)
     
     def compute_loss(self, X, y, training=None):
         """compute loss
