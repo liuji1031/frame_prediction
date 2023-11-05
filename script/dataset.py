@@ -1,5 +1,5 @@
 import os
-from typing import Any
+from typing import Any, List
 import tensorflow as tf
 import random
 from loguru import logger
@@ -80,12 +80,21 @@ class FrameDataGenerator:
                  config=None):
         """return a new instance of the frame generator
         """
+        file_list : List[pathlib.Path]
         self.file_list = file_list
+
+        # open all videos
+        self.video_sources = [cv2.VideoCapture(str(path)) for path in self.file_list]
+        self.video_length = [int(src.get(cv2.CAP_PROP_FRAME_COUNT)) for src in self.video_sources]
 
     def __call__(self, *args: Any, **kwds: Any):
         """return frame data for training/validation/test
 
         """
+
+        
+
+
 
 
 if __name__ == "__main__":
