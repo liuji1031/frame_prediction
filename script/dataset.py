@@ -1,10 +1,10 @@
 import os
+import pathlib
+import random
 from typing import Any, List
 import tensorflow as tf
-import random
 from loguru import logger
 import cv2
-import pathlib
 import numpy as np
 
 class DataManager:
@@ -75,6 +75,21 @@ class DataManager:
         return self.test_set
     
 class FrameDataGenerator:
+    # values for normalizing action data
+    action_mean = np.array([1.15083072e-01,
+                            2.57701695e-01,
+                            9.56139743e+00,
+                            5.16164829e-03,
+                            3.45287584e-03,
+                            -1.62610730e-03,
+                            8.38598115e+00])[np.newaxis,:]
+    action_std = np.array([0.84561082,
+                           2.28476457,
+                           1.51305411,
+                           0.09419529,
+                           0.03367103,
+                           0.05130835,
+                           4.09652116])[np.newaxis]
     def __init__(self,
                  file_list,
                  mode="feedforward",
@@ -93,6 +108,7 @@ class FrameDataGenerator:
         
         # # the frame which the current video handle is on
         self.video_curr_frame = [0 for _ in self.video_sources]
+        # self.unfinished_video_ind = list(range(self.nvideos))
 
         self.n_video_finished = 0
         
@@ -101,7 +117,7 @@ class FrameDataGenerator:
         self.frame_resize_shape = config.get('frame_resize_reshape',(192,256))
 
         # read in all the arrays, first find all the filenames
-        self.action_file_list = [path.parent / f"{path.stem}.txt" for path in self.file_list]
+        self.action_file_list = [path.parent / f"{path.stem}_merge.txt" for path in self.file_list]
 
         for action_file in self.action_file_list:
             logger.info(f"Found action file: {str(action_file)}")
@@ -123,8 +139,10 @@ class FrameDataGenerator:
         """
         action_data = []
         for action_file in self.action_file_list:
+            data = np.loadtxt(str(action_file))
+            data = (data-self.action_mean)/self.action_std
             action_data.append(tf.convert_to_tensor(
-                np.loadtxt(str(action_file)),dtype=self.action_dtype))
+                data,dtype=self.action_dtype))
         return action_data
     
     def format_frames(self, frame, output_size=(192,256)):
@@ -177,8 +195,8 @@ class FrameDataGenerator:
         src.set(cv2.CAP_PROP_POS_FRAMES, start_frame_no)
 
         # report status
-        logger.info((f"Loading {self.file_list[vid_ind].name}, "
-                f"frame {start_frame_no} to {start_frame_no+self.fold_n_frames}"))
+        # logger.info((f"Loading {self.file_list[vid_ind].name}, "
+        #         f"frame {start_frame_no} to {start_frame_no+self.fold_n_frames}"))
 
         # read the next several frames for frames_input
         frame_input = None
@@ -230,15 +248,25 @@ class FrameDataGenerator:
             # check for out of bound curr frame; reset if necessary
             self.check_curr_frame()
 
-            # pick one 
-            vid_ind = np.random.randint(0,self.nvideos,size=None)
-            start_frame_no = self.sample_frame_no(vid_ind)
+            # pick one
+            # vid_ind = np.random.randint(0,self.nvideos,size=None)
+            # start_frame_no = self.sample_frame_no(vid_ind)
+            vid_indices = self.unfinished_video_index()
+            if len(vid_indices) is None:
+                print('Exhausted')
+                return
+
+            # randomly select one from vid_indices
+            vid_ind = vid_indices[int(np.random.randint(0,len(vid_indices),size=None))]
+            start_frame_no = self.video_curr_frame[vid_ind]
 
             # logger.info(f'current vid index: {vid_ind}')
 
             # get frames and actions
-            frame_input, frame_output = self.get_frames(vid_ind,start_frame_no)
+            frame_input, frame_output = self.get_frames(vid_ind, start_frame_no)
             actions = self.get_action(vid_ind, start_frame_no)
+            print(f'{vid_ind}, {start_frame_no}')
+            self.video_curr_frame[vid_ind] += 1
 
             yield frame_input, frame_output, actions
     
@@ -287,11 +315,12 @@ def test():
     # cv2.destroyAllWindows()
 
     # create tensorflow database from the generator
+    n_col = 7 # the txt files have 7 columns
     output_signature = (tf.TensorSpec(shape = (None, None, 3*config["fold_n_frames"]),
                                       dtype = train_loader.frame_dtype),
                         tf.TensorSpec(shape = (None, None, 3),
                                       dtype = train_loader.frame_dtype),
-                        tf.TensorSpec(shape = (6*config["fold_n_frames"],),
+                        tf.TensorSpec(shape = (n_col*config["fold_n_frames"],),
                                       dtype = train_loader.action_dtype))
     
     train_ds = tf.data.Dataset.from_generator(train_loader,
@@ -307,9 +336,9 @@ def test():
     train_ds = train_ds.prefetch(buffer_size = AUTOTUNE)
     train_ds = train_ds.batch(8)
 
-    for _ in range(5):
+    #for _ in range(5):
+    while True:
         frame_input_, frame_output_,actions_ = next(iter(train_ds))
-
         print(frame_input_.shape,frame_output_.shape, actions_.shape)
 
     train_loader.cleanup()

@@ -1,4 +1,5 @@
 import tensorflow as tf
+from loguru import logger
 
 # set up the encoder CNN
 class EncoderNet(tf.keras.Model):
@@ -13,13 +14,17 @@ class EncoderNet(tf.keras.Model):
 
         # layer_specs define the number of cnn layers,
         # the number of unit, and the kernel size
+        layers = []
         for spec in layer_specs:
             # add the convolution layer
             if spec["type"]=="conv2d":
-                self.layers.append(tf.keras.layers.Conv2D(**spec["kwargs"]))
+                layers.append(tf.keras.layers.Conv2D(**spec["kwargs"]))
             elif spec["type"]=="dense":
-                self.layers.append(tf.keras.layers.Dense(**spec["kwargs"]))
-    
+                layers.append(tf.keras.layers.Dense(**spec["kwargs"]))
+            elif spec["type"]=="flatten":
+                layers.append(tf.keras.layers.Flatten())
+        self._layers = tf.keras.Sequential(layers=layers)
+
     def call(self,inputs,training=None,mask=None):
         """forward pass through all cnn layers
 
@@ -29,10 +34,12 @@ class EncoderNet(tf.keras.Model):
         Returns:
             _type_: _description_
         """
-        x = inputs
-        for layer in self.layers:
-            x = layer(x)
-        return x
+        
+        return self._layers(inputs)
+    
+    @property
+    def output_shape(self):
+        return self._layers.layers[-1].output_shape[1:]
     
 class DecoderNet(tf.keras.Model):
     """the CNN for reconstructing the image from intermediate output
@@ -48,11 +55,22 @@ class DecoderNet(tf.keras.Model):
 
         # iterate through all layer specs and define conv2d transpose 
         # layers
+        layers = []
         for spec in layer_specs:
             if spec["type"]=="conv2dtr": # transposed conv2d layer
-                self.layers.append(tf.keras.layers.Conv2DTranspose(**spec["kwargs"]))
+                layers.append(tf.keras.layers.Conv2DTranspose(**spec["kwargs"]))
             elif spec["type"]=="dense":
-                self.layers.append(tf.keras.layers.Dense(**spec["kwargs"]))
+                layers.append(tf.keras.layers.Dense(**spec["kwargs"]))
+            elif spec["type"]=="reshape":
+                layers.append(tf.keras.layers.Reshape(**spec["kwargs"]))
+        self._layers = tf.keras.Sequential(layers=layers)
+    
+    def call(self, inputs, training=False, mask=None):
+        return self._layers(inputs)
+
+    @property
+    def output_shape(self):
+        return self._layers.layers[-1].output_shape[1:]
 
 class InteractionModule(tf.keras.Model):
     """this is the module for the encoded (embedded) features
@@ -64,21 +82,22 @@ class InteractionModule(tf.keras.Model):
     def __init__(self,
                  encoder_dim=1024,
                  action_dim=6,
-                 intermediate_dim=2048):
+                 intermediate_dim=2048,
+                 output_dim=2048):
         
         super().__init__()
 
         # the first fully connected layer that maps encoder to
-        # interaction space (1024->2048)
+        # interaction space (encoder_dim->intermediate_dim)
         self.fc1 = tf.keras.layers.Dense(units=intermediate_dim,activation='linear')
 
         # the second fully connected layer that maps action to the
-        # interaction space (6->2048)
+        # interaction space (action_dim->intermediate_dim)
         self.fc2 = tf.keras.layers.Dense(units=intermediate_dim,activation='linear')
 
         # the third fully connected layer that mixes the interaction between action
         # and encoder
-        self.fc2 = tf.keras.layers.Dense(units=intermediate_dim)
+        self.fc3 = tf.keras.layers.Dense(units=intermediate_dim)
 
     def call(self,inputs,training=None,mask=None):
         """forward pass of the network
@@ -111,36 +130,20 @@ class FramePredictionModel(tf.keras.Model):
         tf (_type_): _description_
     """
 
-    default_encoder_layer_specs = [
-                        {"type":"conv2d","kwargs":{"filters": 64,  "kernel_size": 8, "stride":2,"activation":"relu"}},
-                        {"type":"conv2d","kwargs":{"filters": 128, "kernel_size": 6, "stride":2,"activation":"relu"}},
-                        {"type":"conv2d","kwargs":{"filters": 128, "kernel_size": 6, "stride":2,"activation":"relu"}},
-                        {"type":"conv2d","kwargs":{"filters": 128, "kernel_size": 4, "stride":2,"activation":"relu"}},
-                        {"type":"dense","kwargs":{"units":1024,"activation":"relu"}}
-                    ]
-    
-    default_decoder_layer_spces = [
-                        {"type":"dense","kwargs":{"units":1024,"activation":"relu"}},
-                        {"type":"conv2dtr","kwargs":{"filters": 128, "kernel_size": 4, "stride":2,"activation":"relu"}},
-                        {"type":"conv2dtr","kwargs":{"filters": 128, "kernel_size": 6, "stride":2,"activation":"relu"}},
-                        {"type":"conv2dtr","kwargs":{"filters": 128, "kernel_size": 6, "stride":2,"activation":"relu"}},
-                        {"type":"conv2dtr","kwargs":{"filters":   3, "kernel_size": 8, "stride":2,"activation":"relu"}},
-                    ]
-
     def __init__(self,
-                 encoder_layer_specs=default_encoder_layer_specs,
-                 decoder_layer_specs=default_decoder_layer_spces,
-                 mode='feedforward',
+                 encoder,
+                 decoder,
+                 interaction,
                  learning_rate=1e-3
                  ):
 
         super().__init__()
-        self.encoder = EncoderNet(layer_specs=encoder_layer_specs)
-        self.decoder = DecoderNet(layer_specs=decoder_layer_specs)
-        self.interaction = InteractionModule(intermediate_dim=2048)
+        self.encoder = encoder
+        self.decoder = decoder
+        self.interaction = interaction
 
         self.optimizer = tf.optimizers.Adam(learning_rate=learning_rate,clipvalue=0.5)
-        self.loss_fcn = tf.keras.losses.mean_squared_error
+        self.loss_fcn = tf.keras.losses.MeanSquaredError()
 
     def call(self, inputs, training=None, mask=None):
         """forward pass through the network
@@ -162,7 +165,7 @@ class FramePredictionModel(tf.keras.Model):
         # return decoder output
         return self.decoder(interaction)
     
-    def compute_loss(self, X, y, training=None):
+    def compute_loss(self, frame_in, frame_out, action, training=None):
         """compute loss
 
         Args:
@@ -174,8 +177,8 @@ class FramePredictionModel(tf.keras.Model):
         Returns:
             _type_: _description_
         """
-        y_ = self.call(X)
-        return self.loss_fcn(y_true=y, y_pred=y_)
+        frame_out_pred = self.call((frame_in, action))
+        return self.loss_fcn(y_true=frame_out, y_pred=frame_out_pred)
 
     def get_batch(self, mode='training'):
         X = None
@@ -191,33 +194,54 @@ class FramePredictionModel(tf.keras.Model):
         """
         pass
 
-    def train(self,
-              data=None,
-              max_iteration=1e5,
-              eval_iteration=100):
-        """performs training
+    def step(self,mini_batch, verbose=False):
+        """performs one iteration of training
 
         Args:
-            max_iteration (_type_, optional): _description_. Defaults to 1e5.
-            eval_iteration (int, optional): _description_. Defaults to 100.
+            mini_batch (_type_): _description_
         """
-        X_val = data["X_val"]
-        y_val = data["y_val"]
 
-        for i_iter in range(max_iteration):
-            
-            # fetch training data
-            X,y = self.get_batch(mode="training")
-            
-            # compute loss
-            with tf.GradientTape() as tape:
-                loss_value = self.compute_loss(X,y)
+        # compute loss
+        with tf.GradientTape() as tape:
+            loss_value = self.compute_loss(*mini_batch)
 
             # apply gradient
             grad = tape.gradient(loss_value, self.trainable_variables)
             self.optimizer.apply_gradients(zip(grad, self.trainable_variables))
+        
+        if verbose:
+            logger.info(f"loss: {loss_value.numpy()}")
+        
+    def evaluate(self):
+        pass
+
+    # def train(self,
+    #           data=None,
+    #           max_iteration=1e5,
+    #           eval_iteration=100):
+    #     """performs training
+
+    #     Args:
+    #         max_iteration (_type_, optional): _description_. Defaults to 1e5.
+    #         eval_iteration (int, optional): _description_. Defaults to 100.
+    #     """
+    #     X_val = data["X_val"]
+    #     y_val = data["y_val"]
+
+    #     for i_iter in range(max_iteration):
             
-            # for some interval report metrics on validation set
-            if i_iter % eval_iteration == 0:
+    #         # fetch training data
+    #         X,y = self.get_batch(mode="training")
+            
+    #         # compute loss
+    #         with tf.GradientTape() as tape:
+    #             loss_value = self.compute_loss(X,y,_)
+
+    #         # apply gradient
+    #         grad = tape.gradient(loss_value, self.trainable_variables)
+    #         self.optimizer.apply_gradients(zip(grad, self.trainable_variables))
+            
+    #         # for some interval report metrics on validation set
+    #         if i_iter % eval_iteration == 0:
                 
-                self.compute_r2(X=X_val, y=y_val)
+    #             self.compute_r2(X=X_val, y=y_val)
