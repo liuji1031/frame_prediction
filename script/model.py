@@ -1,6 +1,9 @@
 import tensorflow as tf
 from loguru import logger
 
+# def fpm_loss_fcn(x, y, y_pred, sample_weight=None):
+
+
 # set up the encoder CNN
 class EncoderNet(tf.keras.Model):
     """the CNN for encoding a small image sequence
@@ -134,16 +137,13 @@ class FramePredictionModel(tf.keras.Model):
                  encoder,
                  decoder,
                  interaction,
-                 learning_rate=1e-3
                  ):
 
         super().__init__()
         self.encoder = encoder
         self.decoder = decoder
         self.interaction = interaction
-
-        self.optimizer = tf.optimizers.Adam(learning_rate=learning_rate,clipvalue=0.5)
-        self.loss_fcn = tf.keras.losses.MeanSquaredError()
+        # self.r2_metric = tf.keras.metrics.R2Score()
 
     def call(self, inputs, training=None, mask=None):
         """forward pass through the network
@@ -165,83 +165,31 @@ class FramePredictionModel(tf.keras.Model):
         # return decoder output
         return self.decoder(interaction)
     
-    def compute_loss(self, frame_in, frame_out, action, training=None):
-        """compute loss
-
-        Args:
-            X (_type_): a tuple of (frame, action), where frame and action
-            are each a batch of tensor of the appropriate dimension
-            y (_type_): a batch of actual frame at the next time step
-            training (_type_, optional): _description_. Defaults to None.
-
-        Returns:
-            _type_: _description_
-        """
-        frame_out_pred = self.call((frame_in, action))
-        return self.loss_fcn(y_true=frame_out, y_pred=frame_out_pred)
-
-    def get_batch(self, mode='training'):
-        X = None
-        y = None
-        return X,y
-    
-    def compute_r2(self, X, y):
-        """compute the R-squared value of the current model
-
-        Args:
-            X (_type_): _description_
-            y (_type_): _description_
-        """
-        pass
-
-    def step(self,mini_batch, verbose=False):
+    def train_step(self,data):
         """performs one iteration of training
 
         Args:
-            mini_batch (_type_): _description_
+            data (_type_): _description_
         """
 
         # compute loss
         with tf.GradientTape() as tape:
-            loss_value = self.compute_loss(*mini_batch)
+            feature_in, frame_out = data
+            frame_out_pred = self(feature_in, training=True)
+            loss_value = self.compute_loss(y=frame_out, y_pred=frame_out_pred)
 
-            # apply gradient
-            grad = tape.gradient(loss_value, self.trainable_variables)
-            self.optimizer.apply_gradients(zip(grad, self.trainable_variables))
-        
-        if verbose:
-            logger.info(f"loss: {loss_value.numpy()}")
-        
-    def evaluate(self):
-        pass
+        # apply gradient
+        grad = tape.gradient(loss_value, self.trainable_variables)
+        self.optimizer.apply_gradients(zip(grad, self.trainable_variables))
 
-    # def train(self,
-    #           data=None,
-    #           max_iteration=1e5,
-    #           eval_iteration=100):
-    #     """performs training
+        # for metric in self.metrics:
+        #     if metric.name == "loss":
+        #         metric.update_state(loss_value)
+        #     elif metric.name == "r2":
+        #         metric.
 
-    #     Args:
-    #         max_iteration (_type_, optional): _description_. Defaults to 1e5.
-    #         eval_iteration (int, optional): _description_. Defaults to 100.
-    #     """
-    #     X_val = data["X_val"]
-    #     y_val = data["y_val"]
+        # self.r2_metric.update_state(y_true=tf.reshape(frame_out,(frame_out.shape[0],-1)),
+        #                             y_pred=tf.reshape(frame_out_pred,(frame_out_pred.shape[0],-1))
+        #                             )
 
-    #     for i_iter in range(max_iteration):
-            
-    #         # fetch training data
-    #         X,y = self.get_batch(mode="training")
-            
-    #         # compute loss
-    #         with tf.GradientTape() as tape:
-    #             loss_value = self.compute_loss(X,y,_)
-
-    #         # apply gradient
-    #         grad = tape.gradient(loss_value, self.trainable_variables)
-    #         self.optimizer.apply_gradients(zip(grad, self.trainable_variables))
-            
-    #         # for some interval report metrics on validation set
-    #         if i_iter % eval_iteration == 0:
-                
-    #             self.compute_r2(X=X_val, y=y_val)
+        # return self.r2_metric.result()

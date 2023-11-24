@@ -6,6 +6,7 @@ import tensorflow as tf
 from loguru import logger
 import cv2
 import numpy as np
+import time
 
 class DataManager:
     def __init__(self,
@@ -102,19 +103,22 @@ class FrameDataGenerator:
         self.frame_dtype = tf.float32
         self.action_dtype = tf.float32
 
-        # open all videos
-        self.video_sources = [cv2.VideoCapture(str(path)) for path in self.file_list]
-        self.video_length = [int(src.get(cv2.CAP_PROP_FRAME_COUNT)) for src in self.video_sources]
-        
-        # # the frame which the current video handle is on
-        self.video_curr_frame = [0 for _ in self.video_sources]
-        # self.unfinished_video_ind = list(range(self.nvideos))
-
-        self.n_video_finished = 0
-        
         # use fold_n_frames to predict the next frame, default is 4
         self.fold_n_frames = config.get('fold_n_frames',4)
         self.frame_resize_shape = config.get('frame_resize_reshape',(192,256))
+
+        # open all videos
+        self.video_sources = [cv2.VideoCapture(str(path)) for path in self.file_list]
+        # set a random offset for each video
+        self.video_curr_frame = [] # the frame which the current video handle is on
+        for src in self.video_sources:
+            start_frame = np.random.randint(0,self.fold_n_frames)
+            src.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            self.video_curr_frame.append(start_frame)
+
+        self.video_length = [int(src.get(cv2.CAP_PROP_FRAME_COUNT)) for src in self.video_sources]
+        
+        self.n_video_finished = 0
 
         # read in all the arrays, first find all the filenames
         self.action_file_list = [path.parent / f"{path.stem}_merge.txt" for path in self.file_list]
@@ -159,7 +163,7 @@ class FrameDataGenerator:
         # convert from BGR to RGB first
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         frame = tf.image.convert_image_dtype(frame, self.frame_dtype) # convert to [0,1)
-        frame = tf.image.resize_with_pad(frame, *output_size)
+        # frame = tf.image.resize_with_pad(frame, *output_size)
         # permutate the array such that the shape is channel by height by width
         # frame = tf.transpose(frame,[2,0,1])
         return frame
@@ -169,9 +173,10 @@ class FrameDataGenerator:
 
         """
         index = []
-        for vid_indeo, curr_frame in enumerate(self.video_curr_frame):
-            if curr_frame + self.fold_n_frames < self.video_length[vid_indeo]:
-                index.append(vid_indeo)
+        for vid_index, curr_frame in enumerate(self.video_curr_frame):
+            if curr_frame + self.fold_n_frames < self.video_length[vid_index]:
+                # print(f"vid{vid_index}, {curr_frame}")
+                index.append(vid_index)
         return index
     
     def check_curr_frame(self):
@@ -192,33 +197,45 @@ class FrameDataGenerator:
         # set the start frame
         # curr_frame = self.video_curr_frame[vid_ind]
         src = self.video_sources[vid_ind]
-        src.set(cv2.CAP_PROP_POS_FRAMES, start_frame_no)
+        # src.set(cv2.CAP_PROP_POS_FRAMES, start_frame_no)
 
         # report status
         # logger.info((f"Loading {self.file_list[vid_ind].name}, "
         #         f"frame {start_frame_no} to {start_frame_no+self.fold_n_frames}"))
 
         # read the next several frames for frames_input
-        frame_input = None
-        for _ in range(self.fold_n_frames):
+        frame_input, frame_output = None, None
+        frames = None
+        for _ in range(self.fold_n_frames+1):
             ret, frame = src.read()
-            if ret:
-                frame = self.format_frames(frame, self.frame_resize_shape)
-                if frame_input is None:
-                    frame_input = frame # height by width by channel
-                else:
-                    frame_input = tf.concat([frame_input, frame],axis=2)
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            if not ret:
+                return None,None
+            
+            if frames is None:
+                frames = frame
+            else:
+                frames = np.concatenate((frames, frame),axis=2)
+
+            # if ret:
+            #     frame = self.format_frames(frame, self.frame_resize_shape)
+            #     if frame_input is None:
+            #         frame_input = frame # height by width by channel
+            #     else:
+            #         frame_input = tf.concat([frame_input, frame],axis=2)
+            # else:
+            #     return None, None
+        frames = tf.image.convert_image_dtype(frames, dtype=self.frame_dtype)
+        frames = tf.image.resize(frames, self.frame_resize_shape)
+        # print(frames.shape)
         # the size of frame input is height x width x (channel x n folded frame)
 
         # read the next frame for frame_output
-        ret, frame = src.read()
-        if ret:
-            frame_output = self.format_frames(frame, self.frame_resize_shape)
         
         # increment frame count
-        self.video_curr_frame[vid_ind] += 1
+        self.video_curr_frame[vid_ind] += (self.fold_n_frames+1)
 
-        return frame_input, frame_output
+        return frames[:,:,:-3], frames[:,:,-3:]
     
     def get_action(self, vid_ind,start_frame_no):
         """get the action values
@@ -246,13 +263,13 @@ class FrameDataGenerator:
 
         while True:
             # check for out of bound curr frame; reset if necessary
-            self.check_curr_frame()
+            # self.check_curr_frame()
 
             # pick one
             # vid_ind = np.random.randint(0,self.nvideos,size=None)
             # start_frame_no = self.sample_frame_no(vid_ind)
             vid_indices = self.unfinished_video_index()
-            if len(vid_indices) is None:
+            if len(vid_indices) == 0:
                 print('Exhausted')
                 return
 
@@ -264,12 +281,14 @@ class FrameDataGenerator:
 
             # get frames and actions
             frame_input, frame_output = self.get_frames(vid_ind, start_frame_no)
+            if frame_input is None:
+                print('Exhausted')
+                return
             actions = self.get_action(vid_ind, start_frame_no)
-            print(f'{vid_ind}, {start_frame_no}')
-            self.video_curr_frame[vid_ind] += 1
+            # print(f'{vid_ind}, {start_frame_no}')
 
-            yield frame_input, frame_output, actions
-    
+            yield [frame_input,actions], frame_output
+        
     def cleanup(self):
         """release all video handles
         """
@@ -333,13 +352,18 @@ def test():
     #     print(actions_)
     
     AUTOTUNE = tf.data.AUTOTUNE
-    train_ds = train_ds.prefetch(buffer_size = AUTOTUNE)
+    train_ds = train_ds.prefetch(buffer_size = 20)
     train_ds = train_ds.batch(8)
+    train_ds = train_ds.repeat()
 
     #for _ in range(5):
-    while True:
-        frame_input_, frame_output_,actions_ = next(iter(train_ds))
-        print(frame_input_.shape,frame_output_.shape, actions_.shape)
+    prev_t = time.time()
+    for data in train_ds:
+        
+        # frame_input_, frame_output_,actions_ = next(iter(train_ds))
+        curr_t = time.time()
+        print(curr_t-prev_t)
+        prev_t = curr_t
 
     train_loader.cleanup()
 
