@@ -1,11 +1,12 @@
 import tensorflow as tf
+import keras
 from loguru import logger
 
 # def fpm_loss_fcn(x, y, y_pred, sample_weight=None):
 
 
 # set up the encoder CNN
-class EncoderNet(tf.keras.Model):
+class EncoderNet(keras.Model):
     """the CNN for encoding a small image sequence
     e.g., n=4 consecutive frames
 
@@ -21,12 +22,12 @@ class EncoderNet(tf.keras.Model):
         for spec in layer_specs:
             # add the convolution layer
             if spec["type"]=="conv2d":
-                layers.append(tf.keras.layers.Conv2D(**spec["kwargs"]))
+                layers.append(keras.layers.Conv2D(**spec["kwargs"]))
             elif spec["type"]=="dense":
-                layers.append(tf.keras.layers.Dense(**spec["kwargs"]))
+                layers.append(keras.layers.Dense(**spec["kwargs"]))
             elif spec["type"]=="flatten":
-                layers.append(tf.keras.layers.Flatten())
-        self._layers = tf.keras.Sequential(layers=layers)
+                layers.append(keras.layers.Flatten())
+        self._layers = keras.Sequential(layers=layers)
 
     def call(self,inputs,training=None,mask=None):
         """forward pass through all cnn layers
@@ -44,7 +45,7 @@ class EncoderNet(tf.keras.Model):
     def output_shape(self):
         return self._layers.layers[-1].output_shape[1:]
     
-class DecoderNet(tf.keras.Model):
+class DecoderNet(keras.Model):
     """the CNN for reconstructing the image from intermediate output
 
     Args:
@@ -61,12 +62,12 @@ class DecoderNet(tf.keras.Model):
         layers = []
         for spec in layer_specs:
             if spec["type"]=="conv2dtr": # transposed conv2d layer
-                layers.append(tf.keras.layers.Conv2DTranspose(**spec["kwargs"]))
+                layers.append(keras.layers.Conv2DTranspose(**spec["kwargs"]))
             elif spec["type"]=="dense":
-                layers.append(tf.keras.layers.Dense(**spec["kwargs"]))
+                layers.append(keras.layers.Dense(**spec["kwargs"]))
             elif spec["type"]=="reshape":
-                layers.append(tf.keras.layers.Reshape(**spec["kwargs"]))
-        self._layers = tf.keras.Sequential(layers=layers)
+                layers.append(keras.layers.Reshape(**spec["kwargs"]))
+        self._layers = keras.Sequential(layers=layers)
     
     def call(self, inputs, training=False, mask=None):
         return self._layers(inputs)
@@ -75,7 +76,7 @@ class DecoderNet(tf.keras.Model):
     def output_shape(self):
         return self._layers.layers[-1].output_shape[1:]
 
-class InteractionModule(tf.keras.Model):
+class InteractionModule(keras.Model):
     """this is the module for the encoded (embedded) features
     to interact with the action to output the decoder information
 
@@ -92,15 +93,15 @@ class InteractionModule(tf.keras.Model):
 
         # the first fully connected layer that maps encoder to
         # interaction space (encoder_dim->intermediate_dim)
-        self.fc1 = tf.keras.layers.Dense(units=intermediate_dim,activation='linear')
+        self.fc1 = keras.layers.Dense(units=intermediate_dim,activation='linear')
 
         # the second fully connected layer that maps action to the
         # interaction space (action_dim->intermediate_dim)
-        self.fc2 = tf.keras.layers.Dense(units=intermediate_dim,activation='linear')
+        self.fc2 = keras.layers.Dense(units=intermediate_dim,activation='linear')
 
         # the third fully connected layer that mixes the interaction between action
         # and encoder
-        self.fc3 = tf.keras.layers.Dense(units=intermediate_dim)
+        self.fc3 = keras.layers.Dense(units=intermediate_dim)
 
     def call(self,inputs,training=None,mask=None):
         """forward pass of the network
@@ -125,7 +126,7 @@ class InteractionModule(tf.keras.Model):
         # feed interaction through the third layer and return result
         return self.fc3(interaction)
     
-class FramePredictionModel(tf.keras.Model):
+class FramePredictionModel(keras.Model):
     """connecting sub networks to produce the full frame prediction
     model
 
@@ -143,7 +144,7 @@ class FramePredictionModel(tf.keras.Model):
         self.encoder = encoder
         self.decoder = decoder
         self.interaction = interaction
-        # self.r2_metric = tf.keras.metrics.R2Score()
+        # self.r2_metric = keras.metrics.R2Score()
 
     def call(self, inputs, training=None, mask=None):
         """forward pass through the network
@@ -171,25 +172,25 @@ class FramePredictionModel(tf.keras.Model):
         Args:
             data (_type_): _description_
         """
-
+        tf.print("==")
         # compute loss
+        tf.print(data[0][0][0,0,:5,0])
         with tf.GradientTape() as tape:
             feature_in, frame_out = data
+            
             frame_out_pred = self(feature_in, training=True)
             loss_value = self.compute_loss(y=frame_out, y_pred=frame_out_pred)
-
+            # tf.print(frame_out.shape)
         # apply gradient
         grad = tape.gradient(loss_value, self.trainable_variables)
         self.optimizer.apply_gradients(zip(grad, self.trainable_variables))
 
-        # for metric in self.metrics:
-        #     if metric.name == "loss":
-        #         metric.update_state(loss_value)
-        #     elif metric.name == "r2":
-        #         metric.
+        for metric in self.metrics:
+            if metric.name == "loss":
+                metric.update_state(loss_value)
 
         # self.r2_metric.update_state(y_true=tf.reshape(frame_out,(frame_out.shape[0],-1)),
         #                             y_pred=tf.reshape(frame_out_pred,(frame_out_pred.shape[0],-1))
         #                             )
 
-        # return self.r2_metric.result()
+        return {"loss":loss_value}

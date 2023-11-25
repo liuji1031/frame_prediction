@@ -287,7 +287,7 @@ class FrameDataGenerator:
             actions = self.get_action(vid_ind, start_frame_no)
             # print(f'{vid_ind}, {start_frame_no}')
 
-            yield [frame_input,actions], frame_output
+            yield (frame_input,actions), frame_output
         
     def cleanup(self):
         """release all video handles
@@ -335,12 +335,13 @@ def test():
 
     # create tensorflow database from the generator
     n_col = 7 # the txt files have 7 columns
-    output_signature = (tf.TensorSpec(shape = (None, None, 3*config["fold_n_frames"]),
-                                      dtype = train_loader.frame_dtype),
-                        tf.TensorSpec(shape = (None, None, 3),
-                                      dtype = train_loader.frame_dtype),
-                        tf.TensorSpec(shape = (n_col*config["fold_n_frames"],),
-                                      dtype = train_loader.action_dtype))
+    output_signature = ((tf.TensorSpec(shape = (None, None, 3*config["fold_n_frames"]),
+                                    dtype = train_loader.frame_dtype),
+                     tf.TensorSpec(shape = (n_col*config["fold_n_frames"],),
+                                    dtype = train_loader.action_dtype)),
+                    tf.TensorSpec(shape = (None, None, 3),
+                                    dtype = train_loader.frame_dtype),
+                    )
     
     train_ds = tf.data.Dataset.from_generator(train_loader,
                                           output_signature = output_signature)
