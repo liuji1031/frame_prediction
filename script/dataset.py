@@ -112,7 +112,7 @@ class FrameDataGenerator:
         # set a random offset for each video
         self.video_curr_frame = [] # the frame which the current video handle is on
         for src in self.video_sources:
-            start_frame = np.random.randint(0,self.fold_n_frames)
+            start_frame = np.random.randint(0,self.fold_n_frames+1)
             src.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
             self.video_curr_frame.append(start_frame)
 
@@ -179,16 +179,26 @@ class FrameDataGenerator:
                 index.append(vid_index)
         return index
     
-    def check_curr_frame(self):
+    def check_curr_frame(self, vid_no=None):
         """check for each video file whether the frames are
         exhausted. if so, revert to the beginning of the 
         file
         """
-        for vid_indeo, curr_frame in enumerate(self.video_curr_frame):
-            if curr_frame + self.fold_n_frames >= self.video_length[vid_indeo]:
-                self.video_curr_frame[vid_indeo] = 0
+        # if will go out of video length, go back to the beginning
+        # and randomly select the start
+        if vid_no is None:
+            for vid_index, curr_frame in enumerate(self.video_curr_frame):
+                if curr_frame + self.fold_n_frames >= self.video_length[vid_index]:
+                    start_frame = int(np.random.randint(0,self.fold_n_frames+1))
+                    self.video_curr_frame[vid_index] = start_frame
+                    self.video_sources[vid_index].set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+        else:
+            if self.video_curr_frame[vid_no] + self.fold_n_frames >= self.video_length[vid_no]:
+                    start_frame = int(np.random.randint(0,self.fold_n_frames+1))
+                    self.video_curr_frame[vid_no] = start_frame
+                    self.video_sources[vid_no].set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
-    def get_frames(self, vid_ind,start_frame_no):
+    def get_frames(self, vid_ind,start_frame_no=None):
         """grab frames from video specified by vid_ind
 
         Args:
@@ -266,15 +276,19 @@ class FrameDataGenerator:
             # self.check_curr_frame()
 
             # pick one
-            # vid_ind = np.random.randint(0,self.nvideos,size=None)
+            vid_ind = int(np.random.randint(0,self.nvideos,size=None))
+
+            # reset frame to beginning if necessary
+            self.check_curr_frame(vid_no=vid_ind)
+
             # start_frame_no = self.sample_frame_no(vid_ind)
-            vid_indices = self.unfinished_video_index()
-            if len(vid_indices) == 0:
-                print('Exhausted')
-                return
+            # vid_indices = self.unfinished_video_index()
+            # if len(vid_indices) == 0:
+            #     print('Exhausted')
+            #     return
 
             # randomly select one from vid_indices
-            vid_ind = vid_indices[int(np.random.randint(0,len(vid_indices),size=None))]
+            # vid_ind = vid_indices[int(np.random.randint(0,len(vid_indices),size=None))]
             start_frame_no = self.video_curr_frame[vid_ind]
 
             # logger.info(f'current vid index: {vid_ind}')

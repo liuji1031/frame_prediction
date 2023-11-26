@@ -1,4 +1,5 @@
 import tensorflow as tf
+import tensorflow_addons as tfa
 import keras
 from loguru import logger
 
@@ -22,12 +23,16 @@ class EncoderNet(keras.Model):
         for spec in layer_specs:
             # add the convolution layer
             if spec["type"]=="conv2d":
-                layers.append(keras.layers.Conv2D(**spec["kwargs"]))
+                layers.append(tf.keras.layers.Conv2D(**spec["kwargs"]))
             elif spec["type"]=="dense":
-                layers.append(keras.layers.Dense(**spec["kwargs"]))
+                layers.append(tf.keras.layers.Dense(**spec["kwargs"]))
             elif spec["type"]=="flatten":
-                layers.append(keras.layers.Flatten())
-        self._layers = keras.Sequential(layers=layers)
+                layers.append(tf.keras.layers.Flatten())
+            elif spec["type"]=="input":
+                layers.append(tf.keras.layers.InputLayer(**spec["kwargs"]))
+
+        self._seq = keras.Sequential(layers=layers)
+        self.output_shapes = []
 
     def call(self,inputs,training=None,mask=None):
         """forward pass through all cnn layers
@@ -39,11 +44,17 @@ class EncoderNet(keras.Model):
             _type_: _description_
         """
         
-        return self._layers(inputs)
+        return self._seq(inputs)
     
-    @property
-    def output_shape(self):
-        return self._layers.layers[-1].output_shape[1:]
+    def compute_output_shape(self, input_shape):
+        if len(input_shape)==3:
+            input_shape = (None, *input_shape)
+        shape = input_shape
+        for l in self._seq.layers:
+            shape = l.compute_output_shape(shape)
+            self.output_shapes.append(shape)
+        
+        return shape
     
 class DecoderNet(keras.Model):
     """the CNN for reconstructing the image from intermediate output
@@ -62,19 +73,29 @@ class DecoderNet(keras.Model):
         layers = []
         for spec in layer_specs:
             if spec["type"]=="conv2dtr": # transposed conv2d layer
-                layers.append(keras.layers.Conv2DTranspose(**spec["kwargs"]))
+                layers.append(tf.keras.layers.Conv2DTranspose(**spec["kwargs"]))
             elif spec["type"]=="dense":
-                layers.append(keras.layers.Dense(**spec["kwargs"]))
+                layers.append(tf.keras.layers.Dense(**spec["kwargs"]))
             elif spec["type"]=="reshape":
-                layers.append(keras.layers.Reshape(**spec["kwargs"]))
-        self._layers = keras.Sequential(layers=layers)
+                layers.append(tf.keras.layers.Reshape(**spec["kwargs"]))
+            elif spec["type"]=="input":
+                layers.append(tf.keras.layers.InputLayer(**spec["kwargs"]))
+                
+        self._seq = keras.Sequential(layers=layers)
+        self.output_shapes = []
     
     def call(self, inputs, training=False, mask=None):
-        return self._layers(inputs)
-
-    @property
-    def output_shape(self):
-        return self._layers.layers[-1].output_shape[1:]
+        return self._seq(inputs)
+    
+    def compute_output_shape(self, input_shape):
+        if len(input_shape)==2:
+            input_shape = (None, *input_shape)
+        shape = input_shape
+        for l in self._seq.layers:
+            shape = l.compute_output_shape(shape)
+            self.output_shapes.append(shape)
+        
+        return shape
 
 class InteractionModule(keras.Model):
     """this is the module for the encoded (embedded) features
@@ -93,15 +114,15 @@ class InteractionModule(keras.Model):
 
         # the first fully connected layer that maps encoder to
         # interaction space (encoder_dim->intermediate_dim)
-        self.fc1 = keras.layers.Dense(units=intermediate_dim,activation='linear')
+        self.fc1 = tf.keras.layers.Dense(units=intermediate_dim,activation='linear')
 
         # the second fully connected layer that maps action to the
         # interaction space (action_dim->intermediate_dim)
-        self.fc2 = keras.layers.Dense(units=intermediate_dim,activation='linear')
+        self.fc2 = tf.keras.layers.Dense(units=intermediate_dim,activation='linear')
 
         # the third fully connected layer that mixes the interaction between action
         # and encoder
-        self.fc3 = keras.layers.Dense(units=intermediate_dim)
+        self.fc3 = tf.keras.layers.Dense(units=intermediate_dim)
 
     def call(self,inputs,training=None,mask=None):
         """forward pass of the network
@@ -144,7 +165,7 @@ class FramePredictionModel(keras.Model):
         self.encoder = encoder
         self.decoder = decoder
         self.interaction = interaction
-        # self.r2_metric = keras.metrics.R2Score()
+        self.r2 = tfa.metrics.r_square.RSquare(name='r2')
 
     def call(self, inputs, training=None, mask=None):
         """forward pass through the network
@@ -172,15 +193,11 @@ class FramePredictionModel(keras.Model):
         Args:
             data (_type_): _description_
         """
-        tf.print("==")
+        feature_in, frame_out = data
         # compute loss
-        tf.print(data[0][0][0,0,:5,0])
         with tf.GradientTape() as tape:
-            feature_in, frame_out = data
-            
             frame_out_pred = self(feature_in, training=True)
             loss_value = self.compute_loss(y=frame_out, y_pred=frame_out_pred)
-            # tf.print(frame_out.shape)
         # apply gradient
         grad = tape.gradient(loss_value, self.trainable_variables)
         self.optimizer.apply_gradients(zip(grad, self.trainable_variables))
@@ -188,9 +205,8 @@ class FramePredictionModel(keras.Model):
         for metric in self.metrics:
             if metric.name == "loss":
                 metric.update_state(loss_value)
+            elif metric.name == "r2":
+                # print('updating r2')
+                metric.update_state(y_true=frame_out, y_pred=frame_out_pred)
 
-        # self.r2_metric.update_state(y_true=tf.reshape(frame_out,(frame_out.shape[0],-1)),
-        #                             y_pred=tf.reshape(frame_out_pred,(frame_out_pred.shape[0],-1))
-        #                             )
-
-        return {"loss":loss_value}
+        return {m.name: m.result() for m in self.metrics}
