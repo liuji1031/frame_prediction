@@ -144,7 +144,11 @@ class FrameDataGenerator:
         action_data = []
         for action_file in self.action_file_list:
             data = np.loadtxt(str(action_file))
-            data = (data-self.action_mean)/self.action_std
+            # data = (data-self.action_mean)/self.action_std
+
+            # normalize according each file
+            data = (data-np.mean(data,axis=0,keepdims=True))/np.std(data,axis=0,keepdims=True)
+
             action_data.append(tf.convert_to_tensor(
                 data,dtype=self.action_dtype))
         return action_data
@@ -218,7 +222,9 @@ class FrameDataGenerator:
         frames = None
         for _ in range(self.fold_n_frames+1):
             ret, frame = src.read()
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            if len(frame.shape)==2:
+                frame = frame[:,:,np.newaxis]
             if not ret:
                 return None,None
             
@@ -235,6 +241,7 @@ class FrameDataGenerator:
             #         frame_input = tf.concat([frame_input, frame],axis=2)
             # else:
             #     return None, None
+        # print(frames.shape)
         frames = tf.image.convert_image_dtype(frames, dtype=self.frame_dtype)
         frames = tf.image.resize(frames, self.frame_resize_shape)
         # print(frames.shape)
@@ -245,7 +252,11 @@ class FrameDataGenerator:
         # increment frame count
         self.video_curr_frame[vid_ind] += (self.fold_n_frames+1)
 
-        return frames[:,:,:-3], frames[:,:,-3:]
+        frame_input = frames[:,:,:-1]
+        # frame_output = (frames[:,:,-1]-frames[:,:,-2])[:,:,tf.newaxis]
+        frame_output = (frames[:,:,-1])[:,:,tf.newaxis]
+        # print(frame_input.shape, frame_output.shape)
+        return frame_input, frame_output
     
     def get_action(self, vid_ind,start_frame_no):
         """get the action values
@@ -255,7 +266,9 @@ class FrameDataGenerator:
             start_frame_no (_type_): _description_
         """
         data = self.action_data[vid_ind][start_frame_no:start_frame_no+self.fold_n_frames,:]
-        return tf.reshape(data,[-1])
+        data = tf.gather(data,axis=1,indices=[0,1,5,6]) # keep only some directions of data, x,y acc/z ang v/fwd v
+        data = tf.math.reduce_mean(data,axis=0)
+        return data
 
     def sample_frame_no(self, vid_no):
         """randomly selects a frame within the frame count of
