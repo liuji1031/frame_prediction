@@ -147,8 +147,8 @@ class FrameDataGenerator:
             # data = (data-self.action_mean)/self.action_std
 
             # normalize according each file
-            data = (data-np.mean(data,axis=0,keepdims=True))/np.std(data,axis=0,keepdims=True)
-
+            # data = (data-np.mean(data,axis=0,keepdims=True))/np.std(data,axis=0,keepdims=True)
+            data = data/np.std(data,axis=0,keepdims=True)
             action_data.append(tf.convert_to_tensor(
                 data,dtype=self.action_dtype))
         return action_data
@@ -167,6 +167,9 @@ class FrameDataGenerator:
         # convert from BGR to RGB first
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         frame = tf.image.convert_image_dtype(frame, self.frame_dtype) # convert to [0,1)
+        frame_std = 0.004 # rough estimate
+        frame = (frame - 0.5)/frame_std # zero centered now
+
         # frame = tf.image.resize_with_pad(frame, *output_size)
         # permutate the array such that the shape is channel by height by width
         # frame = tf.transpose(frame,[2,0,1])
@@ -223,6 +226,7 @@ class FrameDataGenerator:
         for _ in range(self.fold_n_frames+1):
             ret, frame = src.read()
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            
             if len(frame.shape)==2:
                 frame = frame[:,:,np.newaxis]
             if not ret:
@@ -244,6 +248,7 @@ class FrameDataGenerator:
         # print(frames.shape)
         frames = tf.image.convert_image_dtype(frames, dtype=self.frame_dtype)
         frames = tf.image.resize(frames, self.frame_resize_shape)
+        frames = (frames-0.5)/0.1
         # print(frames.shape)
         # the size of frame input is height x width x (channel x n folded frame)
 
